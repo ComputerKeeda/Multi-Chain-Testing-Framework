@@ -189,12 +189,24 @@ func runInitNode(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Step 3: Generate keys
+	// Step 3: Generate keys (or use existing)
 	fmt.Println("\n🔑 Generating keys...")
-	keyCmd := exec.Command(config.JunctiondPath, "keys", "add", config.KeyName, "--keyring-backend", "os")
-	if err := runCommand(keyCmd); err != nil {
-		fmt.Printf("Error generating keys: %v\n", err)
-		os.Exit(1)
+
+	// First check if key already exists
+	checkKeyCmd := exec.Command(config.JunctiondPath, "keys", "show", config.KeyName, "--keyring-backend", "os")
+	err := checkKeyCmd.Run()
+
+	if err != nil {
+		// Key doesn't exist, create it
+		fmt.Printf("🔑 Creating new key: %s\n", config.KeyName)
+		keyCmd := exec.Command(config.JunctiondPath, "keys", "add", config.KeyName, "--keyring-backend", "os")
+		if err := runCommand(keyCmd); err != nil {
+			fmt.Printf("Error generating keys: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Key already exists, use it
+		fmt.Printf("✅ Using existing key: %s\n", config.KeyName)
 	}
 
 	// Step 4: Add genesis account
