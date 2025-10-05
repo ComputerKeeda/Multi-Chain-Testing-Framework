@@ -1,0 +1,19 @@
+{
+ "messages": [
+  {
+   "@type": "/junction.evmbridge.MsgUpdateParams",
+   "authority": "air10d07y265gmmuvt4z0w9aw880jnsr700jszsute",
+   "params": {
+    "bridge_workers": [
+        "air1h58eezgk5j4jwwpk3nxggx63gfuhnfcj78z5vj"
+    ],
+    "bridge_contract_address": "0xd47248E2f6C725Dd20C82893162aA545C345834e"
+   }
+  }
+ ],
+ "metadata": "ipfs://QmZ77hQ8A48r9k8Meu2xAftFRP8Nny6Z6H7bYph7HpFprG",
+ "deposit": "51000000uamf",
+ "title": "Update EVM Bridge Authorized Unlockers",
+ "summary": "This proposal aims to update the EVM bridge authorized unlockers list and add new bridge contract addresses to enhance the bridge's security and functionality.",
+ "expedited": true
+}

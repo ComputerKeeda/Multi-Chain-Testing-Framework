@@ -1,0 +1,10 @@
+{
+ "title": "Update EVM Bridge Authorized Unlockers",
+ "authors": [
+  "test1"
+ ],
+ "summary": "This proposal aims to update the EVM bridge authorized unlockers list and add new bridge contract addresses to enhance the bridge's security and functionality.",
+ "details": "The EVM bridge requires regular updates to its authorized unlockers list to maintain security and add new trusted validators. This proposal adds the following addresses to the authorized unlockers list and updates the bridge contract address to ensure proper bridge operations.",
+ "proposal_forum_url": "nothing",
+ "vote_option_context": "yes,no,abstain"
+}
