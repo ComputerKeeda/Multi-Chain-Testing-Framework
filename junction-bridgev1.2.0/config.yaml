@@ -1,0 +1,11 @@
+# Junction Bridge Configuration
+moniker: "junction-testing"
+chain_id: "junction"
+denom: "uamf"
+key_name: "test1"
+amount: "100000000000uamf"
+validator_stake: "10000000000uamf"
+junctiond_path: "./build/junctiond"
+home_dir: "$HOME/.junction"
+minimum_gas_prices: "0.00025uamf"
+rest_endpoint: "http://localhost:1317"

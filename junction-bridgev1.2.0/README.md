@@ -1,433 +1,229 @@
-# Junction Chain Testing Scripts
+# Junction Bridge Testing Tool
 
-A comprehensive Go-based executable for testing Junction blockchain with **two-phase execution**, interactive CLI, parameter change proposals, and automated voting mechanisms.
+A comprehensive tool for setting up and managing Junction blockchain nodes for bridge testing operations.
 
-## 🎯 **Two-Phase Testing System**
+## Features
 
-This chain tester uses a **smart two-phase approach** to handle the requirement that proposals can only be submitted when the chain is running:
+- **Node Initialization**: Automatically initialize Junction blockchain nodes with custom configuration
+- **Genesis Configuration**: Modify genesis files with appropriate voting and deposit periods
+- **Key Management**: Generate and manage validator keys
+- **Configuration Management**: Flexible configuration through YAML files and command-line flags
+- **Governance Proposals**: Submit and manage governance proposals for EVM bridge parameter updates
+- **Voting System**: Vote on governance proposals with validation
+- **Proposal Monitoring**: Real-time monitoring of proposal status with animations
+- **IPFS Integration**: Support for IPFS metadata uploads
 
-### **Phase 1: Chain Setup & Proposal Creation**
+## Quick Start
 
-- ✅ Automated chain initialization with configurable parameters
-- ✅ Genesis account creation and validator staking
-- ✅ Genesis file modification with custom voting periods
-- ✅ Interactive parameter collection for bridge workers and contract addresses
-- ✅ JSON proposal file generation
-- ✅ **State persistence** - saves all user inputs for Phase 2
-
-### **Phase 2: Chain Running + Proposal Submission**
-
-- ✅ **Automatic chain startup** in background
-- ✅ **New terminal opening** for proposal submission
-- ✅ **State restoration** - loads all previous user inputs
-- ✅ Automated proposal submission to running chain
-- ✅ Interactive voting with multiple options
-- ✅ Voting period countdown with real-time animations
-
-## 🚀 **Key Features**
-
-### **Smart State Management**
-
-- **Persistent state** across phases using `testing_state.json`
-- **User input preservation** - no need to re-enter bridge workers/contracts
-- **Automatic cleanup** after completion
-
-### **Seamless User Experience**
-
-- **10-second countdown** before starting chain
-- **Automatic terminal opening** for proposal submission
-- **Clear phase indicators** throughout the process
-- **No manual intervention** required between phases
-
-### **CLI Animations & UX**
-
-- Loading spinners for all operations
-- Countdown timers for voting periods
-- Progress indicators for long-running tasks
-- Real-time status updates
-
-## 🚀 **Quick Start**
-
-### 1. Build the Executable
+### 1. Build the Tool
 
 ```bash
 # Make the build script executable
 chmod +x build_executable.sh
 
-# Build the Go executable
+# Build the executable
 ./build_executable.sh
 ```
 
-### 2. Run the Two-Phase Chain Tester$$
+### 2. Run Node Initialization
 
 ```bash
-# Run the interactive chain tester
-./chain-tester
+# Run with default configuration
+./build/junction-bridge init-node
+
+# Run with custom parameters
+./build/junction-bridge init-node --moniker my-node --chain-id my-chain --key-name my-key
 ```
 
-### 3. **Two-Phase Workflow Explained**
+### 3. Submit Governance Proposals
 
-#### **Phase 1: Setup & Proposal Creation**
+```bash
+# Submit a governance proposal (will prompt for IPFS CID)
+./build/junction-bridge submit-proposal
 
-1. **Chain Setup**: Automated initialization, key generation, genesis configuration
-2. **Proposal Creation**: Interactive input for bridge workers and contract addresses
-3. **Metadata Creation**: Creates `metadata.json` with proposal details
-4. **IPFS Upload**: User uploads metadata to IPFS and provides CID
-5. **Proposal JSON**: Creates `proposal.json` with IPFS metadata reference
-6. **State Saving**: All inputs saved to `testing_state.json`
-7. **Chain Startup**: Chain starts in background with 10-second countdown
-8. **New Terminal**: Automatically opens new terminal for Phase 2
+# Vote on a proposal
+./build/junction-bridge vote <proposal-id> <vote-option>
 
-#### **Phase 2: Proposal Submission & Voting**
-
-1. **State Loading**: Automatically loads all previous user inputs
-2. **Proposal Submission**: Submits proposal to running chain
-3. **Voting**: Interactive voting with multiple options
-4. **Cleanup**: Automatically cleans up state files
-
-### 4. **What You'll See**
-
-```
-🚀 Junction Chain Testing Script
-=================================
-
-📋 Cleaning up existing junctiond directory
-✅ Cleaning up existing junctiond directory completed!
-
-📋 Initializing junctiond node
-✅ Initializing junctiond node completed!
-
-📋 Generating keys
-✅ Using existing key: test1
-
-... (chain setup continues) ...
-
-🔧 Creating Parameter Change Proposal
-====================================
-
-📝 Please enter bridge worker addresses (comma-separated):
-Bridge Workers: air1h58eezgk5j4jwwpk3nxggx63gfuhnfcj78z5vj
-Bridge Contract Address: 0x1234567890123456789012345678901234567890
-
-✅ Proposal JSON created: proposal.json
-
-🤔 Do you want to submit this proposal? (y/n): y
-
-🚀 Starting chain in 10 seconds...
-📋 Opening new terminal for proposal submission...
-⏰ Starting chain in 10 seconds...
-⏰ Starting chain in 9 seconds...
-...
-⏳ Waiting for chain to initialize...
-
-# New terminal opens automatically
-📤 Proposal Submission Phase
-============================
-⏳ Waiting for chain to be ready...
-📋 Submitting parameter change proposal
-✅ Submitting parameter change proposal completed!
-
-🗳️ Do you want to vote on this proposal? (y/n): y
+# Monitor proposal status
+./build/junction-bridge monitor-proposals
 ```
 
 ## Configuration
 
-### Environment Variables
+The tool can be configured through:
 
-Create a `.env` file (copy from `env.example`) to configure:
+1. **config.yaml** file (default configuration)
+2. **Command-line flags** (override config file)
+3. **Environment variables** (highest priority)
+
+### Default Configuration
+
+```yaml
+moniker: "junction-testing"
+chain_id: "junction"
+denom: "uamf"
+key_name: "test1"
+amount: "100000000000uamf"
+validator_stake: "10000000000uamf"
+junctiond_path: "./build/junctiond"
+home_dir: "$HOME/.junction"
+minimum_gas_prices: "0.00025uamf"
+rest_endpoint: "http://localhost:1317"
+```
+
+## What the Tool Does
+
+### Node Initialization (`init-node`)
+
+1. **Cleans Environment**: Removes existing junctiond directory
+2. **Initializes Node**: Creates new blockchain node with specified parameters
+3. **Generates Keys**: Creates validator keys for the node
+4. **Sets Up Genesis**: Adds genesis account and creates gentx
+5. **Configures Governance**: Updates voting and deposit periods
+6. **Starts Node**: Launches the blockchain node with proper gas settings
+
+### Governance Operations (`submit-proposal`, `vote`, `monitor-proposals`)
+
+1. **Metadata Creation**: Creates metadata.json from draft template
+2. **IPFS Upload Guidance**: Provides instructions for uploading to IPFS
+3. **Proposal Creation**: Generates proposal.json with EVM bridge parameter updates using IPFS CID
+4. **Proposal Submission**: Submits governance proposal to the blockchain
+5. **Voting**: Allows voting on proposals with validation
+6. **Monitoring**: Real-time proposal status monitoring with animations
+7. **Completion Detection**: Shows completion animation when voting period ends
+
+## Command Line Options
+
+### Node Initialization
 
 ```bash
-# Chain Configuration
-MONIKER=junction-testing
-CHAIN_ID=junction
-DENOM=uamf
-KEY_NAME=test1
-AMOUNT=100000000000uamf
-VALIDATOR_STAKE=10000000000uamf
-GAS_PRICES=0.0025uamf
-MINIMUM_GAS_PRICES=0.00025uamf
+./build/junction-bridge init-node [flags]
 
-# Bridge Configuration
-BRIDGE_WORKERS=air1abc...,air1def...,air1ghi...
-BRIDGE_CONTRACT_ADDRESS=0x1234567890123456789012345678901234567890
-
-# Proposal Configuration
-PROPOSAL_TITLE=Update EVM Bridge Authorized Unlockers
-PROPOSAL_DESCRIPTION=Add new addresses to the authorized unlockers list
-PROPOSAL_DEPOSIT=1000000uamf
-PROPOSER_KEY=test1
-
-# Voting Configuration
-VOTING_PERIOD=600
-VOTE_OPTION=yes
+Flags:
+  --amount string              Initial amount (default "100000000000uamf")
+  --chain-id string            Chain ID (default "junction")
+  --denom string               Denomination (default "uamf")
+  --home-dir string            Home directory (default "$HOME/.junction")
+  --junctiond-path string      Path to junctiond binary (default "./build/junctiond")
+  --key-name string            Key name (default "test1")
+  --minimum-gas-prices string  Minimum gas prices (default "0.00025uamf")
+  --moniker string             Moniker for the node (default "junction-testing")
+  --validator-stake string     Validator stake amount (default "10000000000uamf")
 ```
 
-### Interactive Mode
-
-If environment variables are not set, the script will prompt for:
-
-- Bridge worker addresses (comma-separated)
-- Bridge contract address
-- Proposal ID for voting
-- Vote options (yes/no/no_with_veto/abstain)
-- Voting period duration
-
-## Usage Examples
-
-### Basic Chain Setup
+### Governance Operations
 
 ```bash
-# Run with default configuration
-./chain-tester
+# Submit a governance proposal
+./build/junction-bridge submit-proposal
+
+# Vote on a proposal
+./build/junction-bridge vote <proposal-id> <vote-option>
+# Vote options: yes, no, abstain, no_with_veto
+
+# Monitor proposal status
+./build/junction-bridge monitor-proposals
 ```
 
-### With Environment Variables
+## Requirements
+
+- Go 1.21 or higher
+- **Junction blockchain binary (`junctiond`)** - Must be available for blockchain operations
+- Sufficient disk space for blockchain data
+
+### Junction Binary Setup
+
+The tool requires the `junctiond` blockchain binary to perform operations like:
+
+- `junctiond tx gov submit-proposal`
+- `junctiond tx gov vote`
+- `junctiond keys add`
+- `junctiond init`
+
+**Option 1: Automatic download (recommended)**
 
 ```bash
-# Set environment variables
-export BRIDGE_WORKERS="air1abc123,air1def456,air1ghi789"
-export BRIDGE_CONTRACT_ADDRESS="0x1234567890123456789012345678901234567890"
-export VOTE_OPTION="yes"
-
-# Run the tester
-./chain-tester
+# The build script will automatically offer to download junctiond
+./build_executable.sh
+# Choose option 1 when prompted
 ```
 
-### Using .env File
+**Option 2: Manual download**
 
 ```bash
-# Copy example environment file
-cp env.example .env
-
-# Edit .env with your values
-nano .env
-
-# Run the tester
-./chain-tester
+# Download from GitHub release
+curl -L -o ./build/junctiond https://github.com/ComputerKeeda/junction/releases/download/bridge-v1.2.0/junctiond
+chmod +x ./build/junctiond
 ```
 
-## 📁 **Generated Files**
-
-The script creates several files during execution:
-
-### **State Management**
-
-- `testing_state.json` - **Persistent state file** containing all user inputs and phase information
-- `metadata.json` - **Proposal metadata file** for IPFS upload
-- `proposal.json` - Parameter change proposal file with IPFS metadata reference
-
-### **Chain Data**
-
-- `~/.junction/` - Chain data directory
-- `~/.junction/config/genesis.json` - Modified genesis file with custom voting periods
-
-### **State File Structure**
-
-```json
-{
-  "phase": "proposal_submission",
-  "bridge_workers": ["air1abc...", "air1def..."],
-  "contract_address": "0x1234567890123456789012345678901234567890",
-  "proposal_title": "Update EVM Bridge Authorized Unlockers",
-  "proposal_description": "Add new addresses to the authorized unlockers list",
-  "proposal_created": true,
-  "chain_running": false,
-  "proposal_submitted": false
-}
-```
-
-## 🔧 **Commands Executed**
-
-The script automatically executes these commands in sequence:
-
-### **Phase 1: Chain Setup & Proposal Creation**
-
-1. **Cleanup**: `rm -rf ~/.junction`
-2. **Initialize**: `junctiond init junction-testing --default-denom uamf --chain-id junction`
-3. **Generate Keys**: `junctiond keys show test1 --keyring-backend os || junctiond keys add test1 --keyring-backend os`
-4. **Add Account**: `junctiond genesis add-genesis-account test1 100000000000uamf --keyring-backend os`
-5. **Stake Validator**: `junctiond genesis gentx test1 10000000000uamf --keyring-backend os --gas-prices 0.0025uamf --chain-id junction`
-6. **Collect Gentx**: `junctiond genesis collect-gentxs`
-7. **Modify Genesis**: `jq` commands to update voting periods
-8. **Start Chain**: `junctiond start --minimum-gas-prices 0.00025uamf` (in background)
-9. **Open Terminal**: `gnome-terminal -- bash -c "cd $(pwd) && ./chain-tester; exec bash"`
-
-### **Phase 2: Proposal Submission & Voting**
-
-1. **Submit Proposal**: `junctiond tx gov submit-proposal proposal.json --from test1 --chain-id junction --fees 100uamf --keyring-backend os --gas auto --gas-adjustment 1.5`
-2. **Vote**: `junctiond tx gov vote <proposal_id> yes --from test1 --keyring-backend os --chain-id junction --gas auto --gas-adjustment 1.5`
-3. **Query Status**: `junctiond query gov proposals --output json`
-
-## 🎯 **Two-Phase System Benefits**
-
-### **Why Two Phases?**
-
-- **Chain Requirement**: Proposals can only be submitted when the chain is running
-- **User Experience**: Seamless workflow without manual intervention
-- **State Persistence**: All user inputs preserved between phases
-- **Automation**: No need to manually start chain or open new terminals
-
-### **Phase Detection**
-
-The script automatically detects which phase to run:
-
-- **First run**: Detects no state file → runs Phase 1
-- **Subsequent runs**: Detects `testing_state.json` → runs Phase 2
-- **Completion**: Automatically cleans up state files
-
-### **Terminal Handling**
-
-- **Primary Terminal**: Runs Phase 1 (chain setup)
-- **Secondary Terminal**: Automatically opens for Phase 2 (proposal submission)
-- **Fallback Support**: Uses `xterm` if `gnome-terminal` not available
-
-## 📋 **Requirements**
-
-- Go 1.21 or later
-- `junctiond` binary in `./build/junctiond`
-- `jq` for JSON processing
-- `gnome-terminal` or `xterm` for automatic terminal opening
-- **IPFS service** for metadata upload (Pinata, Web3.Storage, or IPFS Desktop)
-- Proper permissions to execute binaries
-
-## 🌐 **IPFS Upload Services**
-
-The script requires uploading metadata to IPFS. You can use any of these services:
-
-### **Recommended Services**
-
-- **Pinata**: https://pinata.cloud/ (Free tier available)
-- **Web3.Storage**: https://web3.storage/ (Free tier available)
-- **IPFS Desktop**: https://github.com/ipfs/ipfs-desktop (Local IPFS node)
-
-### **Automated IPFS CID**
-
-You can set the `IPFS_CID` environment variable to skip the manual upload step:
+**Option 3: Use your own binary**
 
 ```bash
-export IPFS_CID="QmYourMetadataHashHere"
-./chain-tester
+# Copy your junctiond binary to:
+cp /path/to/your/junctiond ./build/junctiond
+chmod +x ./build/junctiond
 ```
 
-## 🔧 **Troubleshooting**
+**Option 4: Specify custom path**
 
-### **Common Issues**
+```yaml
+# In config.yaml
+junctiond_path: "/path/to/your/junctiond"
+```
 
-1. **Permission Denied**: Make sure the executable has proper permissions
+## File Structure
 
-   ```bash
-   chmod +x chain-tester
-   ```
+```
+junction-bridgev1.2.0/
+├── main.go                 # Main application code
+├── go.mod                  # Go module definition
+├── config.yaml            # Default configuration
+├── build_executable.sh    # Build script
+├── README.md              # This file
+├── draft_metadata.json    # Draft metadata template
+├── draft_proposal.json    # Draft proposal template
+└── build/                 # Build output directory
+    ├── junction-bridge    # Our compiled executable
+    └── junctiond          # Junction blockchain binary (required)
+```
 
-2. **Missing junctiond**: Ensure `junctiond` binary exists in `./build/junctiond`
+**Generated Files (during runtime):**
 
-   ```bash
-   ls -la build/junctiond
-   ```
+- `metadata.json` - Created from draft template
+- `proposal.json` - Created with IPFS CID
+- `$HOME/.junction/` - Blockchain data directory
 
-3. **Missing jq**: Install jq for JSON processing
+## Troubleshooting
 
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install jq
+### Common Issues
 
-   # macOS
-   brew install jq
-   ```
-
-4. **Terminal Not Opening**: Install required terminal emulator
-
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install gnome-terminal
-
-   # Or install xterm as fallback
-   sudo apt-get install xterm
-   ```
-
-### **Two-Phase Specific Issues**
-
-5. **State File Issues**: Clear state and restart
+1. **Permission Denied**: Make sure the build script is executable
 
    ```bash
-   rm testing_state.json
-   ./chain-tester
+   chmod +x build_executable.sh
    ```
 
-6. **Chain Not Starting**: Check if port is already in use
+2. **Junctiond Not Found**: Ensure the `junctiond` binary is in `./build/junctiond`
 
    ```bash
-   # Check if chain is already running
-   ps aux | grep junctiond
-
-   # Kill existing process if needed
-   pkill junctiond
+   # Check if junctiond exists
+   ls -la ./build/junctiond
    ```
 
-7. **Cannot Stop Chain**: Use proper signal handling
-
+3. **Port Already in Use**: The default port might be in use, check with:
    ```bash
-   # The script now handles Ctrl+C properly
-   # Press Ctrl+C to gracefully stop the chain
-
-   # If that doesn't work, force kill:
-   pkill -f junctiond
+   netstat -tulpn | grep :26657
    ```
-
-8. **Proposal Submission Fails**: Ensure chain is fully started
-
-   ```bash
-   # Wait longer for chain to initialize
-   # The script automatically waits 15 seconds, but you may need more
-   ```
-
-9. **Environment Variables Not Loading**: Check `.env` file format
-   ```bash
-   # Ensure no spaces around =
-   KEY=value
-   # Not: KEY = value
-   ```
-
-### **Debug Mode**
-
-9. **Enable Verbose Logging**: Check chain logs
-
-   ```bash
-   # Check junctiond logs
-   tail -f ~/.junction/logs/junctiond.log
-   ```
-
-10. **Manual State Reset**: Clear all state files
-    ```bash
-    rm testing_state.json
-    rm proposal.json
-    rm -rf ~/.junction
-    ```
 
 ## Development
 
-### Building from Source
+To modify the tool:
 
-```bash
-# Install dependencies
-go mod tidy
-
-# Build the executable
-go build -o chain-tester main.go
-
-# Run tests (if any)
-go test
-```
-
-### Customizing the Script
-
-The script is modular and can be easily extended:
-
-- Add new environment variables in `loadConfig()`
-- Modify proposal structure in `Proposal` and `BridgeParams` types
-- Add new CLI animations in `showLoadingAnimation()`
-- Extend voting options in `voteOnProposal()`
+1. Edit `main.go` for functionality changes
+2. Update `config.yaml` for default configuration changes
+3. Modify `build_executable.sh` for build process changes
+4. Rebuild with `./build_executable.sh`
 
 ## License
 
-This project is part of the Junction blockchain testing suite.
+This project is part of the Junction Bridge testing infrastructure.

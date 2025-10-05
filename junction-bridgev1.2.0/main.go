@@ -4,24 +4,29 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
-	"strconv"
+	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
-var chainProcess *exec.Cmd
-
-type ProposalMetadata struct {
-	Title             string   `json:"title"`
-	Authors           []string `json:"authors"`
-	Summary           string   `json:"summary"`
-	Details           string   `json:"details"`
-	ProposalForumURL  string   `json:"proposal_forum_url"`
-	VoteOptionContext string   `json:"vote_option_context"`
+type Config struct {
+	Moniker          string `mapstructure:"moniker"`
+	ChainID          string `mapstructure:"chain_id"`
+	Denom            string `mapstructure:"denom"`
+	KeyName          string `mapstructure:"key_name"`
+	Amount           string `mapstructure:"amount"`
+	ValidatorStake   string `mapstructure:"validator_stake"`
+	JunctiondPath    string `mapstructure:"junctiond_path"`
+	HomeDir          string `mapstructure:"home_dir"`
+	MinimumGasPrices string `mapstructure:"minimum_gas_prices"`
+	RestEndpoint     string `mapstructure:"rest_endpoint"`
 }
 
 type ProposalMessage struct {
@@ -42,455 +47,342 @@ type Proposal struct {
 	Expedited bool              `json:"expedited"`
 }
 
-type ChainConfig struct {
-	Moniker          string
-	ChainID          string
-	Denom            string
-	KeyName          string
-	Amount           string
-	ValidatorStake   string
-	GasPrices        string
-	MinimumGasPrices string
+type ProposalResponse struct {
+	Proposals []struct {
+		ID               string `json:"id"`
+		Status           string `json:"status"`
+		VotingStartTime  string `json:"voting_start_time"`
+		VotingEndTime    string `json:"voting_end_time"`
+		FinalTallyResult struct {
+			YesCount        string `json:"yes_count"`
+			AbstainCount    string `json:"abstain_count"`
+			NoCount         string `json:"no_count"`
+			NoWithVetoCount string `json:"no_with_veto_count"`
+		} `json:"final_tally_result"`
+	} `json:"proposals"`
 }
 
-type TestingState struct {
-	Phase             string   `json:"phase"`
-	BridgeWorkers     []string `json:"bridge_workers"`
-	ContractAddress   string   `json:"contract_address"`
-	ProposalTitle     string   `json:"proposal_title"`
-	ProposalSummary   string   `json:"proposal_summary"`
-	ProposalDetails   string   `json:"proposal_details"`
-	ProposalForumURL  string   `json:"proposal_forum_url"`
-	IPFSCID           string   `json:"ipfs_cid"`
-	ProposalCreated   bool     `json:"proposal_created"`
-	ChainRunning      bool     `json:"chain_running"`
-	ProposalSubmitted bool     `json:"proposal_submitted"`
+type GenesisConfig struct {
+	AppState struct {
+		Gov struct {
+			Params struct {
+				MaxDepositPeriod      string `json:"max_deposit_period"`
+				VotingPeriod          string `json:"voting_period"`
+				ExpeditedVotingPeriod string `json:"expedited_voting_period"`
+			} `json:"params"`
+		} `json:"gov"`
+	} `json:"app_state"`
 }
 
-func loadConfig() *ChainConfig {
-	return &ChainConfig{
-		Moniker:          getEnv("MONIKER", "junction-testing"),
-		ChainID:          getEnv("CHAIN_ID", "junction"),
-		Denom:            getEnv("DENOM", "uamf"),
-		KeyName:          getEnv("KEY_NAME", "test1"),
-		Amount:           getEnv("AMOUNT", "100000000000uamf"),
-		ValidatorStake:   getEnv("VALIDATOR_STAKE", "10000000000uamf"),
-		GasPrices:        getEnv("GAS_PRICES", "0.0025uamf"),
-		MinimumGasPrices: getEnv("MINIMUM_GAS_PRICES", "0.00025uamf"),
-	}
+var config Config
+
+var rootCmd = &cobra.Command{
+	Use:   "junction-bridge",
+	Short: "Junction Bridge Testing Tool",
+	Long:  "A tool for setting up and managing Junction blockchain nodes for bridge testing",
 }
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
+var initCmd = &cobra.Command{
+	Use:   "init-node",
+	Short: "Initialize and start a Junction node",
+	Long:  "Initialize a Junction blockchain node with custom configuration and start it",
+	Run:   runInitNode,
 }
 
-func loadEnvFile(filename string) {
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Printf("⚠️  Warning: Could not read .env file: %v\n", err)
-		return
-	}
-
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			os.Setenv(key, value)
-		}
-	}
+var submitProposalCmd = &cobra.Command{
+	Use:   "submit-proposal",
+	Short: "Submit a governance proposal",
+	Long:  "Submit a governance proposal to update EVM bridge parameters",
+	Run:   runSubmitProposal,
 }
 
-func saveState(state *TestingState) error {
-	stateJSON, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile("testing_state.json", stateJSON, 0644)
+var voteCmd = &cobra.Command{
+	Use:   "vote [proposal-id] [vote-option]",
+	Short: "Vote on a governance proposal",
+	Long:  "Vote on a governance proposal (yes/no/abstain/no_with_veto)",
+	Args:  cobra.ExactArgs(2),
+	Run:   runVote,
 }
 
-func loadState() *TestingState {
-	content, err := os.ReadFile("testing_state.json")
-	if err != nil {
-		return &TestingState{Phase: "setup"}
-	}
-
-	var state TestingState
-	json.Unmarshal(content, &state)
-	return &state
+var monitorCmd = &cobra.Command{
+	Use:   "monitor-proposals",
+	Short: "Monitor proposal status",
+	Long:  "Monitor the status of governance proposals with animations",
+	Run:   runMonitorProposals,
 }
 
-func clearState() {
-	os.Remove("testing_state.json")
-}
+func init() {
+	// Initialize Viper
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(".")
+	viper.AddConfigPath("$HOME/.junction-bridge")
 
-func setupSignalHandling() {
-	// Create a channel to receive OS signals
-	sigChan := make(chan os.Signal, 1)
+	// Set default values
+	viper.SetDefault("moniker", "junction-testing")
+	viper.SetDefault("chain_id", "junction")
+	viper.SetDefault("denom", "uamf")
+	viper.SetDefault("key_name", "test1")
+	viper.SetDefault("amount", "100000000000uamf")
+	viper.SetDefault("validator_stake", "10000000000uamf")
+	viper.SetDefault("junctiond_path", "./build/junctiond")
+	viper.SetDefault("home_dir", "$HOME/.junction")
+	viper.SetDefault("minimum_gas_prices", "0.00025uamf")
+	viper.SetDefault("rest_endpoint", "http://localhost:1317")
 
-	// Register the channel to receive SIGINT (Ctrl+C) and SIGTERM
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Bind flags
+	initCmd.Flags().String("moniker", "junction-testing", "Moniker for the node")
+	initCmd.Flags().String("chain-id", "junction", "Chain ID")
+	initCmd.Flags().String("denom", "uamf", "Denomination")
+	initCmd.Flags().String("key-name", "test1", "Key name")
+	initCmd.Flags().String("amount", "100000000000uamf", "Initial amount")
+	initCmd.Flags().String("validator-stake", "10000000000uamf", "Validator stake amount")
+	initCmd.Flags().String("junctiond-path", "./build/junctiond", "Path to junctiond binary")
+	initCmd.Flags().String("home-dir", "$HOME/.junction", "Home directory")
+	initCmd.Flags().String("minimum-gas-prices", "0.00025uamf", "Minimum gas prices")
 
-	// Start a goroutine to handle signals
-	go func() {
-		sig := <-sigChan
-		fmt.Printf("\n🛑 Received signal: %v\n", sig)
-		fmt.Println("🔄 Stopping chain and cleaning up...")
+	viper.BindPFlags(initCmd.Flags())
 
-		// Kill the chain process if it's running
-		if chainProcess != nil && chainProcess.Process != nil {
-			fmt.Println("⏹️  Stopping junctiond process...")
-			// Try graceful shutdown first
-			chainProcess.Process.Signal(syscall.SIGTERM)
-
-			// Wait a bit for graceful shutdown
-			time.Sleep(2 * time.Second)
-
-			// Force kill if still running
-			if chainProcess.ProcessState == nil || !chainProcess.ProcessState.Exited() {
-				chainProcess.Process.Kill()
-			}
-		}
-
-		// Also kill any other junctiond processes
-		exec.Command("pkill", "junctiond").Run()
-
-		// Clear state files
-		clearState()
-
-		fmt.Println("✅ Cleanup completed. Goodbye!")
-		os.Exit(0)
-	}()
+	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(submitProposalCmd)
+	rootCmd.AddCommand(voteCmd)
+	rootCmd.AddCommand(monitorCmd)
 }
 
 func main() {
-	fmt.Println("🚀 Junction Chain Testing Script")
-	fmt.Println("=================================")
-
-	// Set up signal handling for graceful shutdown
-	setupSignalHandling()
-
-	// Load configuration from environment variables
-	config := loadConfig()
-
-	// Check if .env file exists and load it
-	if _, err := os.Stat(".env"); err == nil {
-		loadEnvFile(".env")
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
-
-	// Load previous state if exists
-	state := loadState()
-
-	// Check if we're in proposal submission phase
-	if state.Phase == "proposal_submission" {
-		handleProposalSubmission(config, state)
-		return
-	}
-
-	// Phase 1: Chain setup and proposal creation
-	handleChainSetup(config, state)
 }
 
-func handleChainSetup(config *ChainConfig, state *TestingState) {
-	// Step 1: Clean up existing directory
-	executeStep("Cleaning up existing junctiond directory", func() error {
-		return exec.Command("rm", "-rf", os.Getenv("HOME")+"/.junction").Run()
-	})
-
-	// Step 2: Initialize the junctiond node
-	executeStep("Initializing junctiond node", func() error {
-		cmd := exec.Command("./build/junctiond", "init", config.Moniker, "--default-denom", config.Denom, "--chain-id", config.ChainID)
-		return cmd.Run()
-	})
-
-	// Step 3: Generate keys (or use existing)
-	executeStep("Generating keys", func() error {
-		// First check if key already exists
-		checkCmd := exec.Command("./build/junctiond", "keys", "show", config.KeyName, "--keyring-backend", "os")
-		err := checkCmd.Run()
-
-		if err != nil {
-			// Key doesn't exist, create it
-			fmt.Printf("🔑 Creating new key: %s\n", config.KeyName)
-			cmd := exec.Command("./build/junctiond", "keys", "add", config.KeyName, "--keyring-backend", "os")
-			return cmd.Run()
-		} else {
-			// Key already exists, use it
-			fmt.Printf("✅ Using existing key: %s\n", config.KeyName)
-			return nil
+func runInitNode(cmd *cobra.Command, args []string) {
+	// Load configuration
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Printf("Error reading config file: %v\n", err)
 		}
-	})
+	}
 
-	// Step 4: Add genesis account
-	executeStep("Adding genesis account", func() error {
-		cmd := exec.Command("./build/junctiond", "genesis", "add-genesis-account", config.KeyName, config.Amount, "--keyring-backend", "os")
-		return cmd.Run()
-	})
-
-	// Step 5: Stake validator account
-	executeStep("Staking validator account", func() error {
-		cmd := exec.Command("./build/junctiond", "genesis", "gentx", config.KeyName, config.ValidatorStake, "--keyring-backend", "os", "--gas-prices", config.GasPrices, "--chain-id", config.ChainID)
-		return cmd.Run()
-	})
-
-	// Step 6: Collect gentx files
-	executeStep("Collecting gentx files", func() error {
-		cmd := exec.Command("./build/junctiond", "genesis", "collect-gentxs")
-		return cmd.Run()
-	})
-
-	// Step 7: Modify genesis file
-	executeStep("Modifying genesis file with voting periods", func() error {
-		genesisFile := os.Getenv("HOME") + "/.junction/config/genesis.json"
-		cmd := exec.Command("jq",
-			`.app_state.gov.params.max_deposit_period = "600s" |
-			.app_state.gov.params.voting_period = "600s" |
-			.app_state.gov.params.expedited_voting_period = "300s"`,
-			genesisFile)
-
-		output, err := cmd.Output()
-		if err != nil {
-			return err
-		}
-
-		return os.WriteFile(genesisFile+".tmp", output, 0644)
-	})
-
-	// Step 8: Move the modified genesis file
-	executeStep("Applying genesis file changes", func() error {
-		genesisFile := os.Getenv("HOME") + "/.junction/config/genesis.json"
-		return exec.Command("mv", genesisFile+".tmp", genesisFile).Run()
-	})
-
-	// Step 9: Create parameter change proposal
-	createParameterChangeProposal(config)
-
-	// Step 10: Start the node
-	fmt.Println("\n🎯 Starting junctiond node...")
-	fmt.Println("Command: ./build/junctiond start --minimum-gas-prices", config.MinimumGasPrices)
-
-	cmd := exec.Command("./build/junctiond", "start", "--minimum-gas-prices", config.MinimumGasPrices)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Run()
-}
-
-func executeStep(description string, action func() error) {
-	fmt.Printf("\n📋 %s\n", description)
-	fmt.Printf("Command: %s\n", getCommandDescription(description))
-
-	// Show loading animation
-	done := make(chan bool)
-	go showLoadingAnimation(done)
-
-	err := action()
-	done <- true
-
-	if err != nil {
-		fmt.Printf("❌ Error: %v\n", err)
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Error unmarshaling config: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ %s completed successfully!\n", description)
-}
+	fmt.Println("🚀 Starting Junction Node Initialization...")
+	fmt.Printf("Moniker: %s\n", config.Moniker)
+	fmt.Printf("Chain ID: %s\n", config.ChainID)
+	fmt.Printf("Denom: %s\n", config.Denom)
 
-func showLoadingAnimation(done chan bool) {
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	i := 0
-	for {
-		select {
-		case <-done:
-			fmt.Print("\r")
-			return
-		default:
-			fmt.Printf("\r%s Processing...", spinner[i%len(spinner)])
-			time.Sleep(100 * time.Millisecond)
-			i++
-		}
+	// Step 1: Remove existing junctiond directory
+	fmt.Println("\n📁 Removing existing junctiond directory...")
+	homeDir := os.ExpandEnv(config.HomeDir)
+	if err := os.RemoveAll(homeDir); err != nil {
+		fmt.Printf("Warning: Could not remove existing directory: %v\n", err)
+	}
+
+	// Step 2: Initialize the junctiond node
+	fmt.Println("\n🔧 Initializing junctiond node...")
+	initCmd := exec.Command(config.JunctiondPath, "init", config.Moniker, "--default-denom", config.Denom, "--chain-id", config.ChainID)
+	if err := runCommand(initCmd); err != nil {
+		fmt.Printf("Error initializing node: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 3: Generate keys
+	fmt.Println("\n🔑 Generating keys...")
+	keyCmd := exec.Command(config.JunctiondPath, "keys", "add", config.KeyName, "--keyring-backend", "os")
+	if err := runCommand(keyCmd); err != nil {
+		fmt.Printf("Error generating keys: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 4: Add genesis account
+	fmt.Println("\n💰 Adding genesis account...")
+	genesisAccountCmd := exec.Command(config.JunctiondPath, "genesis", "add-genesis-account", config.KeyName, config.Amount, "--keyring-backend", "os")
+	if err := runCommand(genesisAccountCmd); err != nil {
+		fmt.Printf("Error adding genesis account: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 5: Stake validator account
+	fmt.Println("\n🏛️ Staking validator account...")
+	gentxCmd := exec.Command(config.JunctiondPath, "genesis", "gentx", config.KeyName, config.ValidatorStake, "--keyring-backend", "os", "--gas-prices", "0.0025uamf", "--chain-id", config.ChainID)
+	if err := runCommand(gentxCmd); err != nil {
+		fmt.Printf("Error creating gentx: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 6: Collect gentx files
+	fmt.Println("\n📋 Collecting gentx files...")
+	collectGentxCmd := exec.Command(config.JunctiondPath, "genesis", "collect-gentxs")
+	if err := runCommand(collectGentxCmd); err != nil {
+		fmt.Printf("Error collecting gentx files: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 7: Modify genesis file
+	fmt.Println("\n⚙️ Modifying genesis file...")
+	if err := modifyGenesisFile(homeDir); err != nil {
+		fmt.Printf("Error modifying genesis file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 8: Modify app.toml file
+	fmt.Println("\n🔧 Modifying app.toml file...")
+	if err := modifyAppTomlFile(homeDir); err != nil {
+		fmt.Printf("Error modifying app.toml file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 9: Start the node
+	fmt.Println("\n🚀 Starting junctiond node...")
+	fmt.Println("Node will start with minimum gas prices:", config.MinimumGasPrices)
+
+	startCmd := exec.Command(config.JunctiondPath, "start", "--minimum-gas-prices", config.MinimumGasPrices)
+	startCmd.Stdout = os.Stdout
+	startCmd.Stderr = os.Stderr
+
+	if err := startCmd.Run(); err != nil {
+		fmt.Printf("Error starting node: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func getCommandDescription(description string) string {
-	descriptions := map[string]string{
-		"Cleaning up existing junctiond directory":   "rm -rf ~/.junction",
-		"Initializing junctiond node":                "junctiond init junction-testing --default-denom uamf --chain-id junction",
-		"Generating keys":                            "junctiond keys show test1 --keyring-backend os || junctiond keys add test1 --keyring-backend os",
-		"Adding genesis account":                     "junctiond genesis add-genesis-account test1 100000000000uamf --keyring-backend os",
-		"Staking validator account":                  "junctiond genesis gentx test1 10000000000uamf --keyring-backend os --gas-prices 0.0025uamf --chain-id junction",
-		"Collecting gentx files":                     "junctiond genesis collect-gentxs",
-		"Modifying genesis file with voting periods": "jq command to update voting periods",
-		"Applying genesis file changes":              "mv genesis.json.tmp genesis.json",
-	}
-	return descriptions[description]
+func runCommand(cmd *exec.Cmd) error {
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
-func createParameterChangeProposal(config *ChainConfig) {
-	fmt.Println("\n🔧 Creating Parameter Change Proposal")
-	fmt.Println("====================================")
+func modifyGenesisFile(homeDir string) error {
+	genesisFile := filepath.Join(homeDir, "config", "genesis.json")
 
-	// Check for environment variables first
-	envWorkers := getEnv("BRIDGE_WORKERS", "")
-	envContract := getEnv("BRIDGE_CONTRACT_ADDRESS", "")
+	// Read the genesis file
+	data, err := os.ReadFile(genesisFile)
+	if err != nil {
+		return fmt.Errorf("error reading genesis file: %v", err)
+	}
 
-	var bridgeWorkers []string
-	var contractAddress string
+	// Parse JSON
+	var genesis map[string]interface{}
+	if err := json.Unmarshal(data, &genesis); err != nil {
+		return fmt.Errorf("error parsing genesis file: %v", err)
+	}
 
-	// Use environment variables if available
-	if envWorkers != "" {
-		workers := strings.Split(envWorkers, ",")
-		for _, worker := range workers {
-			bridgeWorkers = append(bridgeWorkers, strings.TrimSpace(worker))
-		}
-		fmt.Printf("✅ Using bridge workers from environment: %v\n", bridgeWorkers)
-	} else {
-		// Collect bridge workers interactively
-		fmt.Println("\n📝 Please enter bridge worker addresses (comma-separated):")
-		fmt.Print("Bridge Workers: ")
-		reader := bufio.NewReader(os.Stdin)
-		workersInput, _ := reader.ReadString('\n')
-		workersInput = strings.TrimSpace(workersInput)
+	// Navigate to app_state.gov.params and update values
+	appState, ok := genesis["app_state"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("app_state not found in genesis file")
+	}
 
-		if workersInput != "" {
-			workers := strings.Split(workersInput, ",")
-			for _, worker := range workers {
-				bridgeWorkers = append(bridgeWorkers, strings.TrimSpace(worker))
-			}
-		} else {
-			// Default values for testing
-			bridgeWorkers = []string{"air1abc...", "air1def...", "air1ghi..."}
-			fmt.Println("Using default addresses for testing")
+	gov, ok := appState["gov"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("gov not found in app_state")
+	}
+
+	params, ok := gov["params"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("params not found in gov")
+	}
+
+	// Update the parameters
+	params["max_deposit_period"] = "600s"
+	params["voting_period"] = "660s"
+	params["expedited_voting_period"] = "300s"
+
+	// Write back to file
+	updatedData, err := json.MarshalIndent(genesis, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling updated genesis: %v", err)
+	}
+
+	if err := os.WriteFile(genesisFile, updatedData, 0644); err != nil {
+		return fmt.Errorf("error writing updated genesis file: %v", err)
+	}
+
+	fmt.Println("✅ Genesis file updated with new voting and deposit periods")
+	return nil
+}
+
+func modifyAppTomlFile(homeDir string) error {
+	appTomlFile := filepath.Join(homeDir, "config", "app.toml")
+
+	// Read the app.toml file
+	data, err := os.ReadFile(appTomlFile)
+	if err != nil {
+		return fmt.Errorf("error reading app.toml file: %v", err)
+	}
+
+	content := string(data)
+
+	// Apply modifications
+	content = strings.ReplaceAll(content, `minimum-gas-prices = ""`, `minimum-gas-prices = "0.00025uamf"`)
+	content = strings.ReplaceAll(content, `enable = false`, `enable = true`)
+	content = strings.ReplaceAll(content, `swagger = false`, `swagger = true`)
+
+	// Write back to file
+	if err := os.WriteFile(appTomlFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("error writing updated app.toml file: %v", err)
+	}
+
+	fmt.Println("✅ App.toml file updated with new minimum gas prices")
+	return nil
+}
+
+func runSubmitProposal(cmd *cobra.Command, args []string) {
+	// Load configuration
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Printf("Error reading config file: %v\n", err)
 		}
 	}
 
-	// Use environment variable if available
-	if envContract != "" {
-		contractAddress = envContract
-		fmt.Printf("✅ Using contract address from environment: %s\n", contractAddress)
-	} else {
-		// Collect bridge contract address interactively
-		fmt.Print("Bridge Contract Address: ")
-		reader := bufio.NewReader(os.Stdin)
-		contractInput, _ := reader.ReadString('\n')
-		contractAddress = strings.TrimSpace(contractInput)
-
-		if contractAddress == "" {
-			contractAddress = "0x1234567890123456789012345678901234567890"
-			fmt.Println("Using default contract address for testing")
-		}
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Error unmarshaling config: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Collect additional proposal information
-	fmt.Println("\n📋 Additional Proposal Information")
-	fmt.Println("==================================")
+	fmt.Println("🗳️  Starting Governance Proposal Submission...")
 
-	// Get proposal title
-	proposalTitle := getEnv("PROPOSAL_TITLE", "Update EVM Bridge Authorized Unlockers")
-	fmt.Printf("Proposal Title [%s]: ", proposalTitle)
+	// Step 1: Create metadata.json from draft template
+	fmt.Println("\n📝 Creating metadata.json from draft template...")
+
+	// Read the draft metadata template
+	draftMetadata, err := os.ReadFile("draft_metadata.json")
+	if err != nil {
+		fmt.Printf("Error reading draft_metadata.json: %v\n", err)
+		fmt.Println("Please ensure draft_metadata.json exists in the current directory")
+		os.Exit(1)
+	}
+
+	// Write metadata.json
+	if err := os.WriteFile("metadata.json", draftMetadata, 0644); err != nil {
+		fmt.Printf("Error creating metadata.json: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ metadata.json created successfully")
+	fmt.Println("\n📤 Next steps:")
+	fmt.Println("1. Upload metadata.json to IPFS")
+	fmt.Println("2. Copy the IPFS CID (hash)")
+	fmt.Println("3. Paste the CID below")
+	fmt.Println("\nExample IPFS upload commands:")
+	fmt.Println("  # Using ipfs CLI:")
+	fmt.Println("  ipfs add metadata.json")
+	fmt.Println("  # Or using web interface at https://ipfs.io/")
+	fmt.Println("")
+	fmt.Print("Enter IPFS CID: ")
 	reader := bufio.NewReader(os.Stdin)
-	titleInput, _ := reader.ReadString('\n')
-	titleInput = strings.TrimSpace(titleInput)
-	if titleInput != "" {
-		proposalTitle = titleInput
-	}
-
-	// Get proposal summary
-	proposalSummary := getEnv("PROPOSAL_SUMMARY", "This proposal aims to update the EVM bridge authorized unlockers list and add new bridge contract addresses to enhance the bridge's security and functionality.")
-	fmt.Printf("Proposal Summary [%s]: ", proposalSummary)
-	summaryInput, _ := reader.ReadString('\n')
-	summaryInput = strings.TrimSpace(summaryInput)
-	if summaryInput != "" {
-		proposalSummary = summaryInput
-	}
-
-	// Get proposal details
-	proposalDetails := getEnv("PROPOSAL_DETAILS", "The EVM bridge requires regular updates to its authorized unlockers list to maintain security and add new trusted validators. This proposal adds the following addresses to the authorized unlockers list and updates the bridge contract address to ensure proper bridge operations.")
-	fmt.Printf("Proposal Details [%s]: ", proposalDetails)
-	detailsInput, _ := reader.ReadString('\n')
-	detailsInput = strings.TrimSpace(detailsInput)
-	if detailsInput != "" {
-		proposalDetails = detailsInput
-	}
-
-	// Get proposal forum URL
-	proposalForumURL := getEnv("PROPOSAL_FORUM_URL", "https://forum.junction.network/t/update-evm-bridge-authorized-unlockers")
-	fmt.Printf("Proposal Forum URL [%s]: ", proposalForumURL)
-	forumInput, _ := reader.ReadString('\n')
-	forumInput = strings.TrimSpace(forumInput)
-	if forumInput != "" {
-		proposalForumURL = forumInput
-	}
-
-	// Create metadata JSON
-	metadata := ProposalMetadata{
-		Title:             proposalTitle,
-		Authors:           []string{config.KeyName},
-		Summary:           proposalSummary,
-		Details:           proposalDetails,
-		ProposalForumURL:  proposalForumURL,
-		VoteOptionContext: "yes,no,abstain",
-	}
-
-	// Write metadata to JSON file
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
+	ipfsCID, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Printf("❌ Error creating metadata JSON: %v\n", err)
-		return
+		fmt.Printf("Error reading input: %v\n", err)
+		os.Exit(1)
 	}
+	ipfsCID = strings.TrimSpace(ipfsCID)
 
-	err = os.WriteFile("metadata.json", metadataJSON, 0644)
-	if err != nil {
-		fmt.Printf("❌ Error writing metadata file: %v\n", err)
-		return
-	}
-
-	fmt.Println("✅ Metadata JSON created: metadata.json")
-
-	// Check for IPFS CID in environment variables first
-	envCID := getEnv("IPFS_CID", "")
-	var cidInput string
-
-	if envCID != "" {
-		cidInput = envCID
-		fmt.Printf("✅ Using IPFS CID from environment: %s\n", cidInput)
-	} else {
-		// Wait for user to upload metadata to IPFS and get CID
-		fmt.Println("\n📤 IPFS Upload Step")
-		fmt.Println("===================")
-		fmt.Println("Please upload the metadata.json file to IPFS and get the CID.")
-		fmt.Println("You can use services like:")
-		fmt.Println("  - Pinata: https://pinata.cloud/")
-		fmt.Println("  - IPFS Desktop: https://github.com/ipfs/ipfs-desktop")
-		fmt.Println("  - Web3.Storage: https://web3.storage/")
-		fmt.Println("  - Or any other IPFS service")
-		fmt.Println("")
-		fmt.Print("Enter the IPFS CID (e.g., QmYourHashHere): ")
-		reader := bufio.NewReader(os.Stdin)
-		cidInput, _ = reader.ReadString('\n')
-		cidInput = strings.TrimSpace(cidInput)
-
-		if cidInput == "" {
-			fmt.Println("❌ CID is required to continue. Please upload the metadata and get the CID.")
-			return
-		}
-
-		// Validate CID format (basic check)
-		if !strings.HasPrefix(cidInput, "Qm") && !strings.HasPrefix(cidInput, "bafy") {
-			fmt.Printf("⚠️  Warning: CID doesn't look like a standard IPFS hash. Continuing anyway...\n")
-		}
-
-		fmt.Printf("✅ Using IPFS CID: %s\n", cidInput)
-	}
-
-	// Create proposal JSON with the actual IPFS CID
+	// Step 2: Create proposal.json
+	fmt.Println("\n📝 Creating proposal.json...")
 	proposal := Proposal{
 		Messages: []ProposalMessage{
 			{
@@ -500,319 +392,242 @@ func createParameterChangeProposal(config *ChainConfig) {
 					BridgeWorkers         []string `json:"bridge_workers"`
 					BridgeContractAddress string   `json:"bridge_contract_address"`
 				}{
-					BridgeWorkers:         bridgeWorkers,
-					BridgeContractAddress: contractAddress,
+					BridgeWorkers:         []string{"air1h58eezgk5j4jwwpk3nxggx63gfuhnfcj78z5vj"},
+					BridgeContractAddress: "0xd47248E2f6C725Dd20C82893162aA545C345834e",
 				},
 			},
 		},
-		Metadata:  "ipfs://" + cidInput,
-		Deposit:   "1000000uamf",
-		Title:     proposalTitle,
-		Summary:   proposalSummary,
+		Metadata:  fmt.Sprintf("ipfs://%s", ipfsCID),
+		Deposit:   "51000000uamf",
+		Title:     "Update EVM Bridge Authorized Unlockers",
+		Summary:   "This proposal aims to update the EVM bridge authorized unlockers list and add new bridge contract addresses to enhance the bridge's security and functionality.",
 		Expedited: true,
 	}
 
-	// Save state with proposal data
-	state := loadState()
-	state.BridgeWorkers = bridgeWorkers
-	state.ContractAddress = contractAddress
-	state.ProposalTitle = proposalTitle
-	state.ProposalSummary = proposalSummary
-	state.ProposalDetails = proposalDetails
-	state.ProposalForumURL = proposalForumURL
-	state.IPFSCID = cidInput
-	saveState(state)
-
-	// Write proposal to JSON file
-	proposalJSON, err := json.MarshalIndent(proposal, "", "  ")
+	proposalData, err := json.MarshalIndent(proposal, "", " ")
 	if err != nil {
-		fmt.Printf("❌ Error creating proposal JSON: %v\n", err)
-		return
+		fmt.Printf("Error marshaling proposal: %v\n", err)
+		os.Exit(1)
 	}
 
-	err = os.WriteFile("proposal.json", proposalJSON, 0644)
-	if err != nil {
-		fmt.Printf("❌ Error writing proposal file: %v\n", err)
-		return
+	if err := os.WriteFile("proposal.json", proposalData, 0644); err != nil {
+		fmt.Printf("Error writing proposal.json: %v\n", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("✅ Proposal JSON created: proposal.json")
+	fmt.Println("✅ proposal.json created successfully")
 
-	// Ask if user wants to submit the proposal
-	fmt.Print("\n🤔 Do you want to submit this proposal? (y/n): ")
-	submitInput, _ := reader.ReadString('\n')
-	submitInput = strings.TrimSpace(strings.ToLower(submitInput))
+	// Step 3: Submit proposal to chain
+	fmt.Println("\n🚀 Submitting proposal to chain...")
+	submitCmd := exec.Command(
+		config.JunctiondPath,
+		"tx", "gov", "submit-proposal", "proposal.json",
+		"--from", config.KeyName,
+		"--chain-id", config.ChainID,
+		"--fees", "50uamf",
+		"--keyring-backend", "os",
+		"-y",
+	)
 
-	if submitInput == "y" || submitInput == "yes" {
-		// Save state for proposal submission phase
-		state.Phase = "proposal_submission"
-		state.ProposalCreated = true
-		saveState(state)
-
-		fmt.Println("\n🚀 Starting chain in 10 seconds...")
-		fmt.Println("📋 Opening new terminal for proposal submission...")
-
-		// Countdown
-		for i := 10; i > 0; i-- {
-			fmt.Printf("\r⏰ Starting chain in %d seconds...", i)
-			time.Sleep(1 * time.Second)
-		}
-		fmt.Println()
-
-		// Start chain in background
-		go startChain(config)
-
-		// Wait a bit for chain to start
-		fmt.Println("⏳ Waiting for chain to initialize...")
-		time.Sleep(15 * time.Second)
-
-		// Open new terminal for proposal submission
-		openNewTerminal()
-	} else {
-		// Start chain normally
-		startChain(config)
+	if err := runCommand(submitCmd); err != nil {
+		fmt.Printf("Error submitting proposal: %v\n", err)
+		os.Exit(1)
 	}
+
+	fmt.Println("✅ Proposal submitted successfully!")
+	fmt.Println("\n🎯 Next steps:")
+	fmt.Println("1. Wait for the deposit period to end")
+	fmt.Println("2. Use 'junction-bridge vote <proposal-id> <vote-option>' to vote")
+	fmt.Println("3. Use 'junction-bridge monitor-proposals' to monitor status")
 }
 
-func startChain(config *ChainConfig) {
-	// Check if chain is already running
-	if isChainRunning() {
-		fmt.Println("⚠️  Junctiond is already running!")
-		fmt.Println("💡 If you want to restart, please stop the existing process first")
-		fmt.Println("   You can use: pkill junctiond")
-		return
-	}
-
-	fmt.Println("🚀 Starting junctiond node...")
-	cmd := exec.Command("./build/junctiond", "start", "--minimum-gas-prices", config.MinimumGasPrices)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// Store the process reference for signal handling
-	chainProcess = cmd
-
-	// Start the process
-	err := cmd.Start()
-	if err != nil {
-		fmt.Printf("❌ Error starting junctiond: %v\n", err)
-		return
-	}
-
-	fmt.Println("✅ Junctiond started successfully!")
-	fmt.Println("💡 Press Ctrl+C to stop the chain and exit")
-
-	// Wait for the process to complete
-	cmd.Wait()
-}
-
-func isChainRunning() bool {
-	// Check if junctiond process is running
-	cmd := exec.Command("pgrep", "junctiond")
-	err := cmd.Run()
-	return err == nil
-}
-
-func openNewTerminal() {
-	// Open new terminal and run proposal submission
-	cmd := exec.Command("gnome-terminal", "--", "bash", "-c", "cd $(pwd) && ./chain-tester; exec bash")
-	if err := cmd.Run(); err != nil {
-		// Fallback for other terminals
-		exec.Command("xterm", "-e", "cd $(pwd) && ./chain-tester").Run()
-	}
-}
-
-func handleProposalSubmission(config *ChainConfig, state *TestingState) {
-	fmt.Println("📤 Proposal Submission Phase")
-	fmt.Println("============================")
-
-	if !state.ProposalCreated {
-		fmt.Println("❌ No proposal found. Please run the setup phase first.")
-		return
-	}
-
-	// Wait a bit more for chain to be ready
-	fmt.Println("⏳ Waiting for chain to be ready...")
-	time.Sleep(10 * time.Second)
-
-	// Submit the proposal
-	submitProposal()
-
-	// Ask if user wants to vote
-	fmt.Print("\n🗳️  Do you want to vote on this proposal? (y/n): ")
-	reader := bufio.NewReader(os.Stdin)
-	voteInput, _ := reader.ReadString('\n')
-	voteInput = strings.TrimSpace(strings.ToLower(voteInput))
-
-	if voteInput == "y" || voteInput == "yes" {
-		voteOnProposal()
-	}
-
-	// Clear state after completion
-	clearState()
-	fmt.Println("✅ Testing completed!")
-}
-
-func submitProposal() {
-	fmt.Println("\n📤 Submitting Parameter Change Proposal")
-	fmt.Println("======================================")
-
-	proposerKey := getEnv("PROPOSER_KEY", "test1")
-	chainID := getEnv("CHAIN_ID", "junction")
-	fees := getEnv("PROPOSAL_FEES", "100uamf")
-
-	// Show the command that will be executed
-	fmt.Printf("Command: junctiond tx gov submit-proposal proposal.json --from %s --chain-id %s --fees %s\n", proposerKey, chainID, fees)
-
-	// Execute the proposal submission
-	executeStep("Submitting parameter change proposal", func() error {
-		cmd := exec.Command("./build/junctiond", "tx", "gov", "submit-proposal", "proposal.json", "--from", proposerKey, "--chain-id", chainID, "--fees", fees, "--keyring-backend", "os", "--gas", "auto", "--gas-adjustment", "1.5")
-		return cmd.Run()
-	})
-
-	// Ask if user wants to vote on the proposal
-	fmt.Print("\n🗳️  Do you want to vote on this proposal? (y/n): ")
-	reader := bufio.NewReader(os.Stdin)
-	voteInput, _ := reader.ReadString('\n')
-	voteInput = strings.TrimSpace(strings.ToLower(voteInput))
-
-	if voteInput == "y" || voteInput == "yes" {
-		voteOnProposal()
-	}
-}
-
-func voteOnProposal() {
-	fmt.Println("\n🗳️  Voting on Proposal")
-	fmt.Println("=====================")
-
-	// Get proposal ID
-	fmt.Print("Enter Proposal ID: ")
-	reader := bufio.NewReader(os.Stdin)
-	proposalIDInput, _ := reader.ReadString('\n')
-	proposalID := strings.TrimSpace(proposalIDInput)
-
-	if proposalID == "" {
-		fmt.Println("❌ Proposal ID is required")
-		return
-	}
-
-	// Check for environment variable vote option
-	envVote := getEnv("VOTE_OPTION", "")
-	var vote string
-
-	if envVote != "" {
-		vote = envVote
-		fmt.Printf("✅ Using vote option from environment: %s\n", vote)
-	} else {
-		// Get vote option interactively
-		fmt.Println("Vote options:")
-		fmt.Println("1. yes")
-		fmt.Println("2. no")
-		fmt.Println("3. no_with_veto")
-		fmt.Println("4. abstain")
-		fmt.Print("Enter vote option (1-4): ")
-
-		voteOptionInput, _ := reader.ReadString('\n')
-		voteOption := strings.TrimSpace(voteOptionInput)
-
-		switch voteOption {
-		case "1":
-			vote = "yes"
-		case "2":
-			vote = "no"
-		case "3":
-			vote = "no_with_veto"
-		case "4":
-			vote = "abstain"
-		default:
-			fmt.Println("❌ Invalid vote option")
-			return
+func runVote(cmd *cobra.Command, args []string) {
+	// Load configuration
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Printf("Error reading config file: %v\n", err)
 		}
 	}
 
-	proposerKey := getEnv("PROPOSER_KEY", "test1")
-	chainID := getEnv("CHAIN_ID", "junction")
-
-	// Execute vote
-	executeStep("Voting on proposal", func() error {
-		cmd := exec.Command("./build/junctiond", "tx", "gov", "vote", proposalID, vote, "--from", proposerKey, "--keyring-backend", "os", "--chain-id", chainID, "--gas", "auto", "--gas-adjustment", "1.5")
-		return cmd.Run()
-	})
-
-	// Ask if user wants to wait for voting period
-	fmt.Print("\n⏰ Do you want to wait for the voting period to complete? (y/n): ")
-	waitInput, _ := reader.ReadString('\n')
-	waitInput = strings.TrimSpace(strings.ToLower(waitInput))
-
-	if waitInput == "y" || waitInput == "yes" {
-		waitForVotingPeriod()
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Error unmarshaling config: %v\n", err)
+		os.Exit(1)
 	}
+
+	proposalID := args[0]
+	voteOption := args[1]
+
+	// Validate vote option
+	validOptions := []string{"yes", "no", "abstain", "no_with_veto"}
+	isValid := false
+	for _, option := range validOptions {
+		if voteOption == option {
+			isValid = true
+			break
+		}
+	}
+
+	if !isValid {
+		fmt.Printf("Invalid vote option: %s. Valid options are: %s\n", voteOption, strings.Join(validOptions, ", "))
+		os.Exit(1)
+	}
+
+	fmt.Printf("🗳️  Voting %s on proposal %s...\n", voteOption, proposalID)
+
+	voteCmd := exec.Command(
+		config.JunctiondPath,
+		"tx", "gov", "vote", proposalID, voteOption,
+		"--from", config.KeyName,
+		"--chain-id", config.ChainID,
+		"--fees", "50uamf",
+		"--keyring-backend", "os",
+		"-y",
+	)
+
+	if err := runCommand(voteCmd); err != nil {
+		fmt.Printf("Error voting on proposal: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Successfully voted %s on proposal %s!\n", voteOption, proposalID)
 }
 
-func waitForVotingPeriod() {
-	fmt.Println("\n⏰ Waiting for Voting Period to Complete")
-	fmt.Println("=====================================")
+func runMonitorProposals(cmd *cobra.Command, args []string) {
+	// Load configuration
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Printf("Error reading config file: %v\n", err)
+		}
+	}
 
-	// Check for environment variable first
-	envDuration := getEnv("VOTING_PERIOD", "")
-	var duration int
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Error unmarshaling config: %v\n", err)
+		os.Exit(1)
+	}
 
-	if envDuration != "" {
-		if d, err := strconv.Atoi(envDuration); err == nil {
-			duration = d
-			fmt.Printf("✅ Using voting period from environment: %d seconds\n", duration)
+	fmt.Println("🔍 Monitoring governance proposals...")
+	fmt.Println("Press Ctrl+C to stop monitoring")
+
+	// Animation frames for different states
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinnerIndex := 0
+
+	for {
+		// Fetch proposals
+		proposals, err := fetchProposals(config.RestEndpoint)
+		if err != nil {
+			fmt.Printf("\r❌ Error fetching proposals: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Clear screen and show status
+		fmt.Print("\033[2J\033[H") // Clear screen
+		fmt.Println("🔍 Governance Proposals Monitor")
+		fmt.Println("================================")
+
+		if len(proposals.Proposals) == 0 {
+			fmt.Printf("\r%s No proposals found", spinner[spinnerIndex%len(spinner)])
 		} else {
-			duration = 600
-			fmt.Printf("⚠️  Invalid VOTING_PERIOD in environment, using default: %d seconds\n", duration)
-		}
-	} else {
-		// Get voting period duration interactively
-		fmt.Print("Enter voting period duration in seconds (default: 600): ")
-		reader := bufio.NewReader(os.Stdin)
-		durationInput, _ := reader.ReadString('\n')
-		durationInput = strings.TrimSpace(durationInput)
+			for _, proposal := range proposals.Proposals {
+				status := getStatusDisplay(proposal.Status)
+				fmt.Printf("📋 Proposal #%s - %s\n", proposal.ID, status)
 
-		duration = 600 // default 10 minutes
-		if durationInput != "" {
-			if d, err := strconv.Atoi(durationInput); err == nil {
-				duration = d
+				if proposal.Status == "PROPOSAL_STATUS_VOTING_PERIOD" {
+					fmt.Printf("   ⏰ Voting Period: %s to %s\n",
+						formatTime(proposal.VotingStartTime),
+						formatTime(proposal.VotingEndTime))
+
+					// Check if voting period has ended
+					if isVotingPeriodEnded(proposal.VotingEndTime) {
+						fmt.Println("   🎉 VOTING PERIOD COMPLETED!")
+						showCompletionAnimation()
+						return
+					}
+				}
+
+				fmt.Printf("   📊 Tally: Yes: %s, No: %s, Abstain: %s, No with Veto: %s\n",
+					proposal.FinalTallyResult.YesCount,
+					proposal.FinalTallyResult.NoCount,
+					proposal.FinalTallyResult.AbstainCount,
+					proposal.FinalTallyResult.NoWithVetoCount)
+				fmt.Println()
 			}
 		}
+
+		spinnerIndex++
+		time.Sleep(2 * time.Second)
 	}
-
-	fmt.Printf("⏳ Waiting for %d seconds...\n", duration)
-
-	// Show countdown animation
-	done := make(chan bool)
-	go showCountdownAnimation(duration, done)
-
-	time.Sleep(time.Duration(duration) * time.Second)
-	done <- true
-
-	fmt.Println("\n✅ Voting period completed!")
-
-	// Query proposal status
-	executeStep("Querying proposal status", func() error {
-		cmd := exec.Command("./build/junctiond", "query", "gov", "proposals", "--output", "json")
-		output, err := cmd.Output()
-		if err != nil {
-			return err
-		}
-		fmt.Printf("📊 Proposal Status:\n%s\n", string(output))
-		return nil
-	})
 }
 
-func showCountdownAnimation(duration int, done chan bool) {
-	for i := duration; i > 0; i-- {
-		select {
-		case <-done:
-			return
-		default:
-			minutes := i / 60
-			seconds := i % 60
-			fmt.Printf("\r⏰ Time remaining: %02d:%02d", minutes, seconds)
-			time.Sleep(1 * time.Second)
-		}
+func fetchProposals(restEndpoint string) (*ProposalResponse, error) {
+	url := fmt.Sprintf("%s/cosmos/gov/v1/proposals?proposal_status=PROPOSAL_STATUS_UNSPECIFIED", restEndpoint)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
 	}
-	fmt.Print("\r⏰ Time remaining: 00:00")
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var proposalResponse ProposalResponse
+	if err := json.Unmarshal(body, &proposalResponse); err != nil {
+		return nil, err
+	}
+
+	return &proposalResponse, nil
+}
+
+func getStatusDisplay(status string) string {
+	switch status {
+	case "PROPOSAL_STATUS_DEPOSIT_PERIOD":
+		return "💰 Deposit Period"
+	case "PROPOSAL_STATUS_VOTING_PERIOD":
+		return "🗳️  Voting Period"
+	case "PROPOSAL_STATUS_PASSED":
+		return "✅ PASSED"
+	case "PROPOSAL_STATUS_REJECTED":
+		return "❌ REJECTED"
+	case "PROPOSAL_STATUS_FAILED":
+		return "💥 FAILED"
+	default:
+		return fmt.Sprintf("❓ %s", status)
+	}
+}
+
+func formatTime(timeStr string) string {
+	t, err := time.Parse(time.RFC3339, timeStr)
+	if err != nil {
+		return timeStr
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+func isVotingPeriodEnded(votingEndTime string) bool {
+	endTime, err := time.Parse(time.RFC3339, votingEndTime)
+	if err != nil {
+		return false
+	}
+	return time.Now().After(endTime)
+}
+
+func showCompletionAnimation() {
+	fmt.Println("\n🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉")
+	fmt.Println("🎉                                               🎉")
+	fmt.Println("🎉           PROPOSAL COMPLETED!                🎉")
+	fmt.Println("🎉                                               🎉")
+	fmt.Println("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉")
+
+	// Animate the completion message
+	for i := 0; i < 5; i++ {
+		fmt.Print("\r🎉 PROPOSAL COMPLETED! 🎉")
+		time.Sleep(500 * time.Millisecond)
+		fmt.Print("\r                    ")
+		time.Sleep(500 * time.Millisecond)
+	}
+	fmt.Println("\r🎉 PROPOSAL COMPLETED! 🎉")
 }
