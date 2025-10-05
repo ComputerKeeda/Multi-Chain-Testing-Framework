@@ -436,7 +436,7 @@ func runSubmitProposal(cmd *cobra.Command, args []string) {
 		"tx", "gov", "submit-proposal", "proposal.json",
 		"--from", config.KeyName,
 		"--chain-id", config.ChainID,
-		"--fees", "50uamf",
+		"--fees", "500uamf",
 		"--gas", "auto",
 		"--keyring-backend", "os",
 		"-y",
